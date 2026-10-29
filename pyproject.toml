@@ -1,0 +1,72 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ovos-tts-plugin-audio8"
+description = "OVOS TTS plugin for Audio8 TTS — 0.6B DualAR TTS with one-shot voice cloning"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [
+    { name = "Mike Gray/Oscillate Labs", email = "mike@oscillatelabs.net" },
+]
+keywords = ["ovos", "neon", "plugin", "tts", "audio8", "voice-cloning"]
+dynamic = ["version"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+    "ovos-plugin-manager>=0.0.1",
+    "torch>=2.5.0",
+    "torchaudio>=2.5.0",
+    "transformers>=4.57.0,<5",
+    "soundfile>=0.12",
+    "safetensors>=0.4",
+    "scipy>=1.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/OscillateLabsLLC/ovos-tts-plugin-audio8"
+
+[project.entry-points."opm.tts"]
+ovos-tts-plugin-audio8 = "ovos_tts_plugin_audio8:Audio8TTSPlugin"
+
+[project.entry-points."opm.tts.config"]
+"ovos-tts-plugin-audio8.config" = "ovos_tts_plugin_audio8:Audio8TTSPluginConfig"
+
+[tool.hatch.version]
+path = "ovos_tts_plugin_audio8/version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ovos_tts_plugin_audio8"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.9.0",
+    # ovos-plugin-manager imports pkg_resources, which setuptools 81 removed.
+    "setuptools<81",
+]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --cov=ovos_tts_plugin_audio8 --cov-report=term-missing"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 119
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.ruff.lint.isort]
+lines-after-imports = 2
+combine-as-imports = true
