@@ -106,6 +106,21 @@ def test_finalized_stream_header_is_a_valid_wav(tmp_path):
         assert wav.getnframes() == 1000
 
 
+def test_generate_audio_recreates_a_missing_cache_folder(tmp_path):
+    import asyncio
+
+    plugin = Audio8TTSPlugin(config={"lang": "en-us", "preload": False})
+
+    async def fake_stream(sentence, **kwargs):
+        yield streaming.wav_stream_header(44100) + streaming.silence_pcm16(44100, 0.01)
+
+    target = tmp_path / "pruned" / "seven" / "en-US" / "line.wav"
+    with patch.object(plugin, "stream_tts", fake_stream):
+        asyncio.run(plugin.generate_audio("Engage.", str(target), play_streaming=False))
+    with wave.open(str(target)) as wav:
+        assert wav.getnframes() == 441
+
+
 def test_finalize_rejects_truncated_file(tmp_path):
     path = tmp_path / "short.wav"
     path.write_bytes(b"RIFF")

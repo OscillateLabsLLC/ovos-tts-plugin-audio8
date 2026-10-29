@@ -1,5 +1,6 @@
 """Audio8 TTS plugin for OVOS — 0.6B DualAR TTS with one-shot voice cloning."""
 
+import os
 import shutil
 import wave
 from dataclasses import dataclass
@@ -327,6 +328,8 @@ class Audio8TTSPlugin(StreamingTTS):
     async def generate_audio(self, sentence, wav_file, play_streaming=True, listen=False, message=None,
                              plugin_kwargs=None):
         """Stream as OVOS does, then fix the placeholder WAV sizes so the cached file is valid."""
+        # OPM's queue path creates the cache folder, its streaming path does not; macOS also prunes $TMPDIR.
+        os.makedirs(os.path.dirname(os.fspath(wav_file)) or ".", exist_ok=True)
         wav_file = await super().generate_audio(sentence, wav_file, play_streaming, listen, message, plugin_kwargs)
         finalize_wav_header(wav_file)
         return wav_file
