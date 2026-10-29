@@ -30,6 +30,8 @@ server.
 
 ```bash
 pip install ovos-tts-plugin-audio8
+# For streaming, add the built-in player:
+pip install "ovos-tts-plugin-audio8[player]"
 ```
 
 - On Linux, pip installs the CUDA build of PyTorch by default.
@@ -66,7 +68,8 @@ The defaults select the fastest settings for your hardware. You must set only `v
 | `temperature`, `top_p`, `top_k` | `0.8`, `0.95`, `50` | Sampling settings. |
 | `max_new_tokens` | `1024` | Frame limit for **one sentence**, about 47 s of audio. The plugin splits long utterances into sentences, so there is no limit on total length. This limit stops a sentence that never ends. |
 | `enable_streaming` | `false` | Play audio while the sentence is still being generated. Refer to [Streaming](#streaming). |
-| `stream_player_args` | low-latency `ffplay` | Command that plays the stream from stdin, for example `["paplay", "-"]`. |
+| `stream_player` | `auto` | `sounddevice`, `ffplay` or `auto`. `auto` uses the built-in player when `sounddevice` is installed and there is an output device, and `ffplay` if not. |
+| `stream_player_args` | low-latency `ffplay` | Command that plays the stream from stdin, for example `["paplay", "-"]`. If you set it, `auto` uses this command. |
 | `model`, `revision` | pinned | Hugging Face repository and commit. |
 
 ## Voice cloning
@@ -96,9 +99,11 @@ play each sentence before the plugin has finished generating it.
 | Without streaming | ~2.7 s (first sentence fully generated) |
 | With streaming | **~1.0 s** |
 
-- Streaming needs `ffplay`, `paplay` or `aplay` on the device. OVOS plays the stream through one of
-  these programs. The plugin starts `ffplay` with low-latency flags; the default flags wait for about
-  2 s of audio before they play.
+- The built-in player (the `player` extra) plays the stream through `sounddevice`. When a chunk is
+  late, it plays silence and then continues. It does not discard audio.
+- Without the extra, streaming needs `ffplay`, `paplay` or `aplay` on the device. The plugin starts
+  `ffplay` with low-latency flags; the default flags wait for about 2 s of audio before they play.
+  When `ffplay` runs out of audio, it discards some audio, so a late chunk can cause a short glitch.
 - Streamed audio is 44.1 kHz, the codec rate. The `sample_rate` setting does not apply.
 - Each chunk decodes the sentence again from its first frame. The codec looks back over the whole
   sentence, so this is the only exact way to decode in chunks. A scheduler sends each chunk just
@@ -108,8 +113,6 @@ play each sentence before the plugin has finished generating it.
   so that each decode stays short. Without streaming, sentences are not split.
 - When the wake word is heard, the plugin reads the whole model once, in the background. This
   removes a ~2 s delay on the first reply after the device has been idle.
-- Known limit: `ffplay` discards audio when it runs out, so a late chunk can cause a short glitch.
-  A built-in player that plays silence instead is planned.
 - Mouth movement: the model gives no phoneme timing, so the plugin sends visemes from the audio level
   in 40 ms steps (closed, half open, round, wide). With streaming, each chunk's visemes go out when that
   chunk starts to play. Without streaming, the visemes travel with the WAV and are kept in the OVOS cache.

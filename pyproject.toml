@@ -33,6 +33,10 @@ dependencies = [
     "scipy>=1.10",
 ]
 
+[project.optional-dependencies]
+# Built-in stream player. Without it, streaming plays through ffplay.
+player = ["sounddevice>=0.4"]
+
 [project.urls]
 Homepage = "https://github.com/OscillateLabsLLC/ovos-tts-plugin-audio8"
 

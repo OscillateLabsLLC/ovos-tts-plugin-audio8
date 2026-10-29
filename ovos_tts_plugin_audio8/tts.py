@@ -1,7 +1,6 @@
 """Audio8 TTS plugin for OVOS — 0.6B DualAR TTS with one-shot voice cloning."""
 
 import os
-import shutil
 import wave
 from dataclasses import dataclass
 from typing import AsyncIterable, Dict, Iterator, Optional, Tuple
@@ -10,9 +9,10 @@ import numpy as np
 from ovos_plugin_manager.templates.tts import TTS, StreamingTTS
 from ovos_utils.log import LOG
 
-from ovos_tts_plugin_audio8.chunking import CostModel, PlaybackClock
+from ovos_tts_plugin_audio8.chunking import STREAM_PLAYBACK_LATENCY, CostModel, PlaybackClock
 from ovos_tts_plugin_audio8.loudness import voice_gain
 from ovos_tts_plugin_audio8.prewarm import Prewarmer
+from ovos_tts_plugin_audio8.stream_players import make_stream_callbacks
 from ovos_tts_plugin_audio8.streaming import (
     STREAM_PAD_SECONDS,
     finalize_wav_header,
@@ -23,7 +23,7 @@ from ovos_tts_plugin_audio8.streaming import (
     wav_stream_header,
 )
 from ovos_tts_plugin_audio8.text import split_for_streaming, split_sentences
-from ovos_tts_plugin_audio8.visemes import VisemeStreamCallbacks, decode_visemes, encode_visemes, loudness_visemes
+from ovos_tts_plugin_audio8.visemes import decode_visemes, encode_visemes, loudness_visemes
 
 
 DEFAULT_MODEL_ID = "Edge0/Audio8-TTS-Realistic-0.6b"
@@ -209,20 +209,6 @@ def _synthesize(engine: Audio8Engine, sentence: str, voice: VoiceProfile, gen_kw
     return waveforms[0, : int(lengths[0])].float().cpu().numpy() * _voice_gain_for(engine, voice)
 
 
-# OPM's default `ffplay -autoexit -nodisp -` probes ~2 s of piped input before it starts playing
-# (measured: first sound at 2.33 s vs 0.22 s with these flags, no audio dropped).
-_LOW_LATENCY_FFPLAY_ARGS = ("-autoexit", "-nodisp", "-loglevel", "error",
-                            "-probesize", "32", "-analyzeduration", "0", "-fflags", "nobuffer", "-")
-
-
-def _stream_player_args(config: dict) -> Optional[list]:
-    """Player command for streamed audio; None lets OPM pick paplay/aplay."""
-    if config.get("stream_player_args"):
-        return list(config["stream_player_args"])
-    ffplay = shutil.which("ffplay")
-    return [ffplay, *_LOW_LATENCY_FFPLAY_ARGS] if ffplay else None
-
-
 
 def _stream_sentence(engine: Audio8Engine, sentence: str, voice: VoiceProfile, gen_kwargs: dict,
                      decoder: str, clock: PlaybackClock, cost: CostModel) -> Iterator[np.ndarray]:
@@ -297,15 +283,11 @@ class Audio8TTSPlugin(StreamingTTS):
         return _pick_decoder(self.config.get("decoder", "auto"), engine.device)
 
     def init(self, bus=None, playback=None, callbacks=None):
-        # StreamingTTS.init builds subprocess-player callbacks and raises when no ffplay/paplay/aplay
-        # is installed. Only require one when streaming playback is actually enabled.
-        if not (callbacks or self.config.get("enable_streaming")):
-            TTS.init(self, bus, playback)
-        else:
-            super().init(bus, playback, callbacks)
-            if callbacks is None:
-                self.callbacks = VisemeStreamCallbacks(self.bus, play_args=_stream_player_args(self.config),
-                                                       tts_config=self.config)
+        # Same as StreamingTTS.init, minus its default callbacks: those spawn a subprocess player and
+        # raise when no ffplay/paplay/aplay exists, even with the built-in player available.
+        TTS.init(self, bus, playback)
+        if callbacks or self.config.get("enable_streaming"):
+            self.callbacks = callbacks or make_stream_callbacks(self.bus, self.config)
         Prewarmer(self._loaded_tensors).register(self.bus)
 
     def _loaded_tensors(self) -> Optional[list]:
@@ -330,15 +312,20 @@ class Audio8TTSPlugin(StreamingTTS):
         """
         engine = self._engine
         profile, decoder, rate = self._resolve_voice(voice), self._decoder_for(engine), engine.sample_rate
-        clock, cost = PlaybackClock(), CostModel()  # shared by every sentence: the player's queue spans them
-        clock.add(STREAM_PAD_SECONDS)
-        yield wav_stream_header(rate) + silence_pcm16(rate)
+        player = getattr(self, "callbacks", None)
+        pad = getattr(player, "pad_seconds", STREAM_PAD_SECONDS)
+        # Shared by every sentence: the player's queue spans them.
+        clock = PlaybackClock(latency=getattr(player, "playback_latency", STREAM_PLAYBACK_LATENCY))
+        cost = CostModel()
+        clock.add(pad)
+        yield wav_stream_header(rate) + silence_pcm16(rate, pad)
         for part in split_for_streaming(sentence):
             for chunk in _stream_sentence(engine, part, profile, self._generation_kwargs, decoder, clock, cost):
                 clock.add(len(chunk) / rate)
                 clock.speech_written = True
                 yield to_pcm16(chunk)
-        yield silence_pcm16(rate)
+        if pad:
+            yield silence_pcm16(rate, pad)
 
     async def generate_audio(self, sentence, wav_file, play_streaming=True, listen=False, message=None,
                              plugin_kwargs=None):
