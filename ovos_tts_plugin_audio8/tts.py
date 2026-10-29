@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from typing import AsyncIterable, Dict, Iterator, Optional, Tuple
 
 import numpy as np
-import quebra_frases
 from ovos_plugin_manager.templates.tts import TTS, StreamingTTS
 from ovos_utils.log import LOG
 
 from ovos_tts_plugin_audio8.chunking import CostModel, PlaybackClock
+from ovos_tts_plugin_audio8.prewarm import Prewarmer
 from ovos_tts_plugin_audio8.streaming import (
     STREAM_PAD_SECONDS,
     finalize_wav_header,
@@ -20,6 +20,7 @@ from ovos_tts_plugin_audio8.streaming import (
     to_pcm16,
     wav_stream_header,
 )
+from ovos_tts_plugin_audio8.text import split_for_streaming, split_sentences
 from ovos_tts_plugin_audio8.visemes import VisemeStreamCallbacks, decode_visemes, encode_visemes, loudness_visemes
 
 
@@ -208,9 +209,6 @@ def _stream_player_args(config: dict) -> Optional[list]:
     return [ffplay, *_LOW_LATENCY_FFPLAY_ARGS] if ffplay else None
 
 
-def _split_sentences(utterance: str) -> list:
-    return [part for part in quebra_frases.sentence_tokenize(utterance) if part.strip()] or [utterance]
-
 
 def _stream_sentence(engine: Audio8Engine, sentence: str, voice: VoiceProfile, gen_kwargs: dict,
                      decoder: str, clock: PlaybackClock, cost: CostModel) -> Iterator[np.ndarray]:
@@ -287,11 +285,23 @@ class Audio8TTSPlugin(StreamingTTS):
         # is installed. Only require one when streaming playback is actually enabled.
         if not (callbacks or self.config.get("enable_streaming")):
             TTS.init(self, bus, playback)
-            return
-        super().init(bus, playback, callbacks)
-        if callbacks is None:
-            self.callbacks = VisemeStreamCallbacks(self.bus, play_args=_stream_player_args(self.config),
-                                                   tts_config=self.config)
+        else:
+            super().init(bus, playback, callbacks)
+            if callbacks is None:
+                self.callbacks = VisemeStreamCallbacks(self.bus, play_args=_stream_player_args(self.config),
+                                                       tts_config=self.config)
+        Prewarmer(self._loaded_tensors).register(self.bus)
+
+    def _loaded_tensors(self) -> Optional[list]:
+        """Every tensor the next reply will read, or None when the model is not loaded (a wake word must
+        not trigger a 2.6 GB load; `preload` does that)."""
+        key = (self.config.get("model", DEFAULT_MODEL_ID), self.config.get("revision", DEFAULT_REVISION),
+               _pick_device(self.config.get("device", "auto")))
+        engine = _engines.get(key)
+        if engine is None:
+            return None
+        modules = [engine.model, engine.model.__dict__.get("_arktts_codec")]
+        return [t for m in modules if m is not None for t in [*m.parameters(), *m.buffers()]]
 
     def viseme(self, phonemes):
         """get_tts puts loudness visemes in the phonemes slot, already as [code, cumulative end] pairs."""
@@ -307,7 +317,7 @@ class Audio8TTSPlugin(StreamingTTS):
         clock, cost = PlaybackClock(), CostModel()  # shared by every sentence: the player's queue spans them
         clock.add(STREAM_PAD_SECONDS)
         yield wav_stream_header(rate) + silence_pcm16(rate)
-        for part in _split_sentences(sentence):
+        for part in split_for_streaming(sentence):
             for chunk in _stream_sentence(engine, part, profile, self._generation_kwargs, decoder, clock, cost):
                 clock.add(len(chunk) / rate)
                 clock.speech_written = True
@@ -357,7 +367,7 @@ class Audio8TTSPlugin(StreamingTTS):
         profile, decoder = self._resolve_voice(voice), self._decoder_for(engine)
         # OVOS only sentence-splits when `sentence_tokenize` is set, so long utterances arrive whole.
         # Generating per sentence keeps each one inside the 2,048-frame context and max_new_tokens.
-        parts = _split_sentences(sentence)
+        parts = split_sentences(sentence)
         audio = np.concatenate([_synthesize(engine, part, profile, self._generation_kwargs, decoder)
                                 for part in parts])
         target_rate = int(self.config.get("sample_rate", DEFAULT_SAMPLE_RATE))
