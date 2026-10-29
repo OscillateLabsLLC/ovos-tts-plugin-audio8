@@ -130,7 +130,8 @@ def _fake_sounddevice(has_output=True):
     ({"stream_player_args": ["paplay", "-"]}, True, stream_players.FfplayStreamCallbacks),
 ])
 def test_factory_picks_the_built_in_player_when_it_can(config, has_output, expected):
-    with patch.dict(sys.modules, {"sounddevice": _fake_sounddevice(has_output)}):
+    with patch.dict(sys.modules, {"sounddevice": _fake_sounddevice(has_output)}), \
+            patch("shutil.which", return_value="/opt/homebrew/bin/ffplay"):
         assert type(stream_players.make_stream_callbacks(MagicMock(), config)) is expected
 
 
