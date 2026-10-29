@@ -26,7 +26,8 @@ dependencies = [
     "quebra-frases>=0.3",
     "torch>=2.5.0",
     "torchaudio>=2.5.0",
-    "transformers>=4.57.0,<5",
+    # 5.x needs tts.restore_rope_buffers (meta-device init leaves the RoPE tables unset).
+    "transformers>=4.57.0,<6",
     "soundfile>=0.12",
     "safetensors>=0.4",
     "scipy>=1.10",

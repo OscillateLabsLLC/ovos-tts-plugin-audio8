@@ -115,8 +115,27 @@ def _get_engine(model_id: str, revision: str, device: str) -> Audio8Engine:
     LOG.info("Loading Audio8 TTS %s@%s on %s (%s)", model_id, revision[:8], device, dtype)
     processor = AutoProcessor.from_pretrained(model_id, revision=revision, trust_remote_code=True)
     model = AutoModel.from_pretrained(model_id, revision=revision, trust_remote_code=True, dtype=dtype)
+    restore_rope_buffers(model)
     _engines[key] = Audio8Engine(model=model.eval().to(device), processor=processor, device=device)
     return _engines[key]
+
+
+def restore_rope_buffers(model):
+    """Recompute Audio8's RoPE tables after loading.
+
+    transformers 5 builds models on the meta device, so non-persistent buffers computed in
+    ``__init__`` are never filled: ``freqs_cis`` comes out as garbage and ``fast_freqs_cis`` as zeros,
+    and the model then never emits EOS. On transformers 4 this is a no-op rewrite of equal values.
+    """
+    import sys
+
+    import torch
+
+    precompute = sys.modules[type(model).__module__]._precompute_rope
+    cfg = model.config
+    with torch.no_grad():
+        model.freqs_cis.copy_(precompute(cfg.max_seq_len, cfg.head_dim, cfg.rope_base))
+        model.fast_freqs_cis.copy_(precompute(cfg.num_codebooks, cfg.fast_head_dim, cfg.rope_base))
 
 
 def _encode_reference(engine: Audio8Engine, voice: VoiceProfile):

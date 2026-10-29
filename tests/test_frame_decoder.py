@@ -75,6 +75,16 @@ def test_generate_returns_valid_codes_within_budget(model, decoder):
     assert codes.numel() == 0 or (codes.min() >= 0 and codes.max() < model.config.codebook_size)
 
 
+def test_restore_rope_buffers_repairs_uninitialized_tables(model):
+    good, good_fast = model.freqs_cis.clone(), model.fast_freqs_cis.clone()
+    with torch.no_grad():
+        model.freqs_cis.fill_(float("nan"))  # what transformers 5's meta-device init leaves behind
+        model.fast_freqs_cis.zero_()
+    tts.restore_rope_buffers(model)
+    torch.testing.assert_close(model.freqs_cis, good)
+    torch.testing.assert_close(model.fast_freqs_cis, good_fast)
+
+
 def test_cuda_graph_mode_rejects_non_cuda_device(model):
     with pytest.raises(ValueError, match="CUDA"):
         FrameDecoder(model, *SAMPLING, DecodeMode.CUDA_GRAPH)
