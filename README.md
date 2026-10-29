@@ -66,6 +66,7 @@ The defaults select the fastest settings for your hardware. You must set only `v
 | `temperature`, `top_p`, `top_k` | `0.8`, `0.95`, `50` | Sampling settings. |
 | `max_new_tokens` | `1024` | Frame limit for **one sentence**, about 47 s of audio. The plugin splits long utterances into sentences, so there is no limit on total length. This limit stops a sentence that never ends. |
 | `enable_streaming` | `false` | Play audio while the sentence is still being generated. Refer to [Streaming](#streaming). |
+| `stream_player_args` | low-latency `ffplay` | Command that plays the stream from stdin, for example `["paplay", "-"]`. |
 | `model`, `revision` | pinned | Hugging Face repository and commit. |
 
 ## Voice cloning
@@ -79,6 +80,9 @@ The defaults select the fastest settings for your hardware. You must set only `v
 - The reference, its transcript and the sentence share a 2,048-frame context. Use short references.
 - Each take is sampled, so takes of the same sentence are different. A lower `temperature` gives
   takes that are more alike.
+- The model copies the loudness of the clip. The plugin measures each clip and applies one gain per
+  voice, so all voices play at about the same level (within ~4 dB in tests; a quiet clip and a loud
+  clip were 16 dB apart before).
 
 Only clone a voice that you have the right to use.
 
@@ -90,14 +94,22 @@ play each sentence before the plugin has finished generating it.
 | M3 Max, MPS | Time to first audio, 6.5 s utterance |
 | :--- | :--- |
 | Without streaming | ~2.7 s (first sentence fully generated) |
-| With streaming | **0.43 s** |
+| With streaming | **~1.0 s** |
 
 - Streaming needs `ffplay`, `paplay` or `aplay` on the device. OVOS plays the stream through one of
-  these programs.
+  these programs. The plugin starts `ffplay` with low-latency flags; the default flags wait for about
+  2 s of audio before they play.
 - Streamed audio is 44.1 kHz, the codec rate. The `sample_rate` setting does not apply.
 - Each chunk decodes the sentence again from its first frame. The codec looks back over the whole
-  sentence, so this is the only exact way to decode in chunks. Chunk sizes double (12, 24, 48 …
-  frames), so the extra codec work is about one more full decode. RTF goes from 0.54 to 0.64 on MPS.
+  sentence, so this is the only exact way to decode in chunks. A scheduler sends each chunk just
+  before the player would run out, and never a chunk too small to pay for its own decode. The first
+  chunk is about 1.4 s of audio, so playback starts with a lead.
+- Long sentences (more than 100 characters) are split at commas into pieces of 40 to 100 characters,
+  so that each decode stays short. Without streaming, sentences are not split.
+- When the wake word is heard, the plugin reads the whole model once, in the background. This
+  removes a ~2 s delay on the first reply after the device has been idle.
+- Known limit: `ffplay` discards audio when it runs out, so a late chunk can cause a short glitch.
+  A built-in player that plays silence instead is planned.
 - Mouth movement: the model gives no phoneme timing, so the plugin sends visemes from the audio level
   in 40 ms steps (closed, half open, round, wide). With streaming, each chunk's visemes go out when that
   chunk starts to play. Without streaming, the visemes travel with the WAV and are kept in the OVOS cache.
