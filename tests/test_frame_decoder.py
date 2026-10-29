@@ -26,7 +26,7 @@ def model():
     for key, value in TINY.items():
         setattr(config, key, value)
     torch.manual_seed(0)
-    return AutoModel.from_config(config, trust_remote_code=True, torch_dtype=torch.float32).eval()
+    return AutoModel.from_config(config, trust_remote_code=True, dtype=torch.float32).eval()
 
 
 @pytest.fixture
@@ -40,7 +40,7 @@ def _prompt(model, width=12):
     return ids
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def test_sliced_semantic_logits_match_full_vocab(model, decoder):
     prompt = _prompt(model)
     width = prompt.shape[-1]
@@ -52,7 +52,7 @@ def test_sliced_semantic_logits_match_full_vocab(model, decoder):
     torch.testing.assert_close(sliced_hidden, full_hidden)
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def test_semantic_sampling_only_emits_semantic_tokens_or_eos(model, decoder):
     cfg = model.config
     for _ in range(50):
@@ -61,7 +61,7 @@ def test_semantic_sampling_only_emits_semantic_tokens_or_eos(model, decoder):
         assert token == cfg.eos_token_id or cfg.semantic_begin_id <= token <= cfg.semantic_end_id
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def test_generate_returns_valid_codes_within_budget(model, decoder):
     prefix = torch.randint(0, 1000, (1, 8))
     suffix = torch.randint(0, 1000, (1, 4))

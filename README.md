@@ -64,7 +64,8 @@ The defaults select the fastest settings for your hardware. You must set only `v
 | `preload` | `true` | Load the model and build the decoder when the plugin starts. This takes 10–60 s, so the first sentence is fast. |
 | `sample_rate` | `22050` | Output WAV rate. The model makes 44.1 kHz audio; the plugin resamples it. |
 | `temperature`, `top_p`, `top_k` | `0.8`, `0.95`, `50` | Sampling settings. |
-| `max_new_tokens` | `1024` | Frame limit for one sentence (about 21.5 frames per second of audio). |
+| `max_new_tokens` | `1024` | Frame limit for **one sentence**, about 47 s of audio. The plugin splits long utterances into sentences, so there is no limit on total length. This limit stops a sentence that never ends. |
+| `enable_streaming` | `false` | Play audio while the sentence is still being generated. Refer to [Streaming](#streaming). |
 | `model`, `revision` | pinned | Hugging Face repository and commit. |
 
 ## Voice cloning
@@ -80,6 +81,25 @@ The defaults select the fastest settings for your hardware. You must set only `v
   takes that are more alike.
 
 Only clone a voice that you have the right to use.
+
+## Streaming
+
+The plugin is an OVOS `StreamingTTS`. Set `"enable_streaming": true`, and `ovos-audio` starts to
+play each sentence before the plugin has finished generating it.
+
+| M3 Max, MPS | Time to first audio, 6.5 s utterance |
+| :--- | :--- |
+| Without streaming | ~2.7 s (first sentence fully generated) |
+| With streaming | **0.43 s** |
+
+- Streaming needs `ffplay`, `paplay` or `aplay` on the device. OVOS plays the stream through one of
+  these programs.
+- Streamed audio is 44.1 kHz, the codec rate. The `sample_rate` setting does not apply.
+- Each chunk decodes the sentence again from its first frame. The codec looks back over the whole
+  sentence, so this is the only exact way to decode in chunks. Chunk sizes double (12, 24, 48 …
+  frames), so the extra codec work is about one more full decode. RTF goes from 0.54 to 0.64 on MPS.
+- Streaming works only when the plugin runs inside `ovos-audio`. The Neon Hub (`neon-audio`) and
+  `ovos-tts-server` 1.15 always request complete files.
 
 ## Performance
 

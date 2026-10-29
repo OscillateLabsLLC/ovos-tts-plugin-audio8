@@ -57,7 +57,8 @@ class FrameDecoder:
         self.mode = mode
         # What the caller asked for; differs from `mode` after a compile -> eager fallback.
         self.requested_mode = mode
-        with torch.no_grad():
+        # inference_mode everywhere (not no_grad): torch.compile guards on the grad mode it traced under.
+        with torch.inference_mode():
             self._allocate_buffers()
             self._step = self._build_step()
 
@@ -165,9 +166,19 @@ class FrameDecoder:
             hidden = layer(hidden, rope, self.fast_masks[position], cache_position)
         return model.fast_output(model.fast_norm(hidden))[:, -1]
 
-    @torch.no_grad()
     def generate(self, inputs: dict, max_new_tokens: int) -> torch.Tensor:
         """Run prefill eagerly, then step frames until EOS. Returns codes [1, num_codebooks, T]."""
+        frames = 0
+        for frames in self.iter_generate(inputs, max_new_tokens):
+            pass
+        return self.codes_out[:, :frames].clone().unsqueeze(0)
+
+    @torch.inference_mode()
+    def iter_generate(self, inputs: dict, max_new_tokens: int):
+        """Yield the number of valid frames in ``codes_out`` after each EOS check; the last value is final.
+
+        ``codes_out`` is overwritten by the next utterance, so consumers must copy what they keep.
+        """
         prompt, prompt_mask = self.model._prepare_prompt(**inputs)
         width = prompt.shape[-1]
         budget = min(max_new_tokens, self.config.max_seq_len - width)
@@ -180,9 +191,9 @@ class FrameDecoder:
         self.position.fill_(width)
         self.step.zero_()
         self.previous.fill_(-1)
-        return self._run_until_eos(budget)
+        yield from self._run_until_eos(budget)
 
-    def _run_until_eos(self, budget: int) -> torch.Tensor:
+    def _run_until_eos(self, budget: int):
         steps = 0
         while steps < budget:
             batch = min(_EOS_CHECK_INTERVAL, budget - steps)
@@ -191,6 +202,6 @@ class FrameDecoder:
             steps += batch
             eos = (self.semantic_out[:steps] == self.config.eos_token_id).nonzero()
             if eos.numel():
-                steps = int(eos[0])
-                break
-        return self.codes_out[:, :steps].clone().unsqueeze(0)
+                yield int(eos[0])
+                return
+            yield steps

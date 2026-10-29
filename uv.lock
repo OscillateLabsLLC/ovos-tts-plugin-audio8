@@ -1831,6 +1831,7 @@ name = "ovos-tts-plugin-audio8"
 source = { editable = "." }
 dependencies = [
     { name = "ovos-plugin-manager" },
+    { name = "quebra-frases" },
     { name = "safetensors" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
@@ -1853,6 +1854,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "ovos-plugin-manager", specifier = ">=0.0.1" },
+    { name = "quebra-frases", specifier = ">=0.3" },
     { name = "safetensors", specifier = ">=0.4" },
     { name = "scipy", specifier = ">=1.10" },
     { name = "soundfile", specifier = ">=0.12" },

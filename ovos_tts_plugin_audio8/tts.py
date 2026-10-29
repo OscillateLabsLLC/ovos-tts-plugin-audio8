@@ -2,11 +2,19 @@
 
 import wave
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import AsyncIterable, Dict, Iterator, Optional, Tuple
 
 import numpy as np
-from ovos_plugin_manager.templates.tts import TTS
+import quebra_frases
+from ovos_plugin_manager.templates.tts import TTS, StreamingTTS
 from ovos_utils.log import LOG
+
+from ovos_tts_plugin_audio8.streaming import (
+    finalize_wav_header,
+    stream_codes_to_audio,
+    to_pcm16,
+    wav_stream_header,
+)
 
 
 DEFAULT_MODEL_ID = "Edge0/Audio8-TTS-Realistic-0.6b"
@@ -161,6 +169,23 @@ def _synthesize(engine: Audio8Engine, sentence: str, voice: VoiceProfile, gen_kw
     return waveforms[0, : int(lengths[0])].float().cpu().numpy()
 
 
+def _split_sentences(utterance: str) -> list:
+    return [part for part in quebra_frases.sentence_tokenize(utterance) if part.strip()] or [utterance]
+
+
+def _stream_sentence(engine: Audio8Engine, sentence: str, voice: VoiceProfile, gen_kwargs: dict,
+                     decoder: str) -> Iterator[np.ndarray]:
+    """Yield codec-rate audio chunks for one sentence as frames are generated."""
+    if decoder == "model":
+        # Upstream generate() has no incremental hook; stream the sentence as one chunk.
+        yield _synthesize(engine, sentence, voice, gen_kwargs, decoder)
+        return
+    inputs = _build_inputs(engine, sentence, voice)
+    sampling = {key: gen_kwargs[key] for key in ("top_k", "top_p", "temperature")}
+    frame_decoder = engine.frame_decoder(decoder, **sampling)
+    yield from stream_codes_to_audio(engine.model, frame_decoder, inputs, gen_kwargs["max_new_tokens"])
+
+
 def _resample(audio: np.ndarray, native_rate: int, target_rate: int) -> np.ndarray:
     if native_rate == target_rate:
         return audio
@@ -180,7 +205,7 @@ def _write_pcm16_wav(path: str, audio: np.ndarray, sample_rate: int):
         wf.writeframes(pcm.tobytes())
 
 
-class Audio8TTSPlugin(TTS):
+class Audio8TTSPlugin(StreamingTTS):
     """Audio8 TTS — DualAR 0.6B TTS with one-shot voice cloning.
 
     Config example (mycroft.conf):
@@ -218,6 +243,34 @@ class Audio8TTSPlugin(TTS):
     def _decoder_for(self, engine: Audio8Engine) -> str:
         return _pick_decoder(self.config.get("decoder", "auto"), engine.device)
 
+    def init(self, bus=None, playback=None, callbacks=None):
+        # StreamingTTS.init builds subprocess-player callbacks and raises when no ffplay/paplay/aplay
+        # is installed. Only require one when streaming playback is actually enabled.
+        if callbacks or self.config.get("enable_streaming"):
+            super().init(bus, playback, callbacks)
+        else:
+            TTS.init(self, bus, playback)
+
+    async def stream_tts(self, sentence: str, lang: str = None, voice: str = None) -> AsyncIterable[bytes]:
+        """Yield a streaming WAV (44.1 kHz, 16-bit mono): header first, then PCM as it is decoded.
+
+        The utterance is split into sentences like get_tts does.
+        """
+        engine = self._engine
+        profile = self._resolve_voice(voice)
+        decoder = self._decoder_for(engine)
+        yield wav_stream_header(engine.sample_rate)
+        for part in _split_sentences(sentence):
+            for chunk in _stream_sentence(engine, part, profile, self._generation_kwargs, decoder):
+                yield to_pcm16(chunk)
+
+    async def generate_audio(self, sentence, wav_file, play_streaming=True, listen=False, message=None,
+                             plugin_kwargs=None):
+        """Stream as OVOS does, then fix the placeholder WAV sizes so the cached file is valid."""
+        wav_file = await super().generate_audio(sentence, wav_file, play_streaming, listen, message, plugin_kwargs)
+        finalize_wav_header(wav_file)
+        return wav_file
+
     @property
     def _engine(self) -> Audio8Engine:
         return _get_engine(
@@ -251,8 +304,12 @@ class Audio8TTSPlugin(TTS):
 
     def get_tts(self, sentence: str, wav_file: str, lang: str = None, voice: str = None) -> Tuple[str, None]:
         engine = self._engine
-        audio = _synthesize(engine, sentence, self._resolve_voice(voice), self._generation_kwargs,
-                            self._decoder_for(engine))
+        profile, decoder = self._resolve_voice(voice), self._decoder_for(engine)
+        # OVOS only sentence-splits when `sentence_tokenize` is set, so long utterances arrive whole.
+        # Generating per sentence keeps each one inside the 2,048-frame context and max_new_tokens.
+        parts = _split_sentences(sentence)
+        audio = np.concatenate([_synthesize(engine, part, profile, self._generation_kwargs, decoder)
+                                for part in parts])
         target_rate = int(self.config.get("sample_rate", DEFAULT_SAMPLE_RATE))
         _write_pcm16_wav(wav_file, _resample(audio, engine.sample_rate, target_rate), target_rate)
         return wav_file, None
