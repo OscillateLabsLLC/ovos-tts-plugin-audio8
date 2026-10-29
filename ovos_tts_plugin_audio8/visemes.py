@@ -5,14 +5,11 @@ open (3), rounded (2), wide (0). Steps sit at percentiles of measured Audio8 spe
 70th, 40th and 15th), expressed relative to the normalized speech level in loudness.py.
 """
 
-import struct
 import threading
 import time
 from typing import List, Optional
 
 import numpy as np
-from ovos_bus_client.message import Message, dig_for_message
-from ovos_plugin_manager.templates.tts import StreamingTTSCallbacks
 
 from ovos_tts_plugin_audio8.chunking import PlaybackClock
 from ovos_tts_plugin_audio8.loudness import TARGET_SPEECH_DB
@@ -24,7 +21,6 @@ REST_CODE = 4
 # -35.6 dB median: wide from -31, round from -37, half open from -44.
 _LADDER = ((TARGET_SPEECH_DB + 4.6, 0), (TARGET_SPEECH_DB - 1.4, 2), (TARGET_SPEECH_DB - 8.4, 3))
 VISEME_MESSAGE = "enclosure.mouth.viseme_list"
-_WAV_HEADER_BYTES = 44
 
 
 def _code_for(rms_db: float) -> int:
@@ -60,37 +56,29 @@ def decode_visemes(encoded: Optional[str]) -> List[List[float]]:
     return pairs
 
 
-class VisemeStreamCallbacks(StreamingTTSCallbacks):
-    """Plays the stream like OPM's callbacks and sends each chunk's visemes when that chunk starts playing."""
+class VisemeScheduler:
+    """Sends each chunk's visemes when that chunk starts to play, timed by a playback clock."""
 
-    def __init__(self, bus, play_args=None, tts_config=None):
-        super().__init__(bus, play_args=play_args, tts_config=tts_config)
-        self.sample_rate: Optional[int] = None  # read from each stream's WAV header
+    def __init__(self, bus):
+        self.bus = bus
+        self.clock = PlaybackClock()
         self._timers: List[threading.Timer] = []
-        self._clock = PlaybackClock()
         self._message = None
 
-    def stream_start(self, message=None):
-        self._cancel_timers()
-        self._clock = PlaybackClock(now=self._clock.now)
-        self._message = message or dig_for_message() or Message("speak")
-        super().stream_start(message)
+    def start(self, message, latency: float):
+        self.stop()
+        self.clock = PlaybackClock(latency=latency, now=self.clock.now)
+        self._message = message
 
-    def stream_chunk(self, chunk):
-        super().stream_chunk(chunk)
-        pcm = chunk
-        if chunk[:4] == b"RIFF":
-            self.sample_rate = struct.unpack_from("<I", chunk, 24)[0]
-            pcm = chunk[_WAV_HEADER_BYTES:]
-        if not pcm or self.sample_rate is None:
-            return
+    def add(self, pcm: bytes, sample_rate: int):
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768
-        plays_at = self._clock.add(len(audio) / self.sample_rate)
-        self._schedule(plays_at, loudness_visemes(audio, self.sample_rate))
+        plays_at = self.clock.add(len(audio) / sample_rate)
+        self._schedule(plays_at, loudness_visemes(audio, sample_rate))
 
-    def stream_stop(self, listen=False, message=None):
-        super().stream_stop(listen, message)  # waits for the player, so every chunk has played
-        self._cancel_timers()
+    def stop(self):
+        for timer in self._timers:
+            timer.cancel()
+        self._timers = []
 
     def _schedule(self, plays_at: float, pairs):
         timer = threading.Timer(max(0.0, plays_at - time.monotonic()), self._emit, args=(pairs,))
@@ -100,8 +88,3 @@ class VisemeStreamCallbacks(StreamingTTSCallbacks):
 
     def _emit(self, pairs):
         self.bus.emit(self._message.forward(VISEME_MESSAGE, {"start": time.time(), "visemes": pairs}))
-
-    def _cancel_timers(self):
-        for timer in self._timers:
-            timer.cancel()
-        self._timers = []

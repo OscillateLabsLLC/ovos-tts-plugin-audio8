@@ -1,12 +1,12 @@
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 
 from ovos_tts_plugin_audio8 import visemes
 from ovos_tts_plugin_audio8.chunking import PlaybackClock
 from ovos_tts_plugin_audio8.loudness import TARGET_SPEECH_DB
-from ovos_tts_plugin_audio8.streaming import silence_pcm16, to_pcm16, wav_stream_header
+from ovos_tts_plugin_audio8.streaming import silence_pcm16, to_pcm16
 
 
 RATE = 44100
@@ -37,40 +37,39 @@ def test_visemes_survive_the_phonemes_slot():
     assert visemes.decode_visemes(None) == []
 
 
-def test_stream_callbacks_time_each_chunk_from_the_header_rate():
-    bus = MagicMock()
-    with patch("shutil.which", return_value="/opt/homebrew/bin/ffplay"):
-        callbacks = visemes.VisemeStreamCallbacks(bus, play_args=["cat"])
+def _scheduler(now=time.monotonic):
+    scheduler = visemes.VisemeScheduler(MagicMock())
+    scheduler.clock = PlaybackClock(now=now)
+    scheduler.start(MagicMock(), latency=0.1)
     sent = []
-    callbacks._schedule = lambda plays_at, pairs: sent.append((plays_at, pairs))
-    with patch.object(visemes.StreamingTTSCallbacks, "stream_chunk"):
-        callbacks.stream_chunk(wav_stream_header(RATE) + silence_pcm16(RATE, 0.2))
-        callbacks.stream_chunk(to_pcm16(_tone(0.12, -20)))
-    assert callbacks.sample_rate == RATE
+    scheduler._schedule = lambda plays_at, pairs: sent.append((plays_at, pairs))
+    return scheduler, sent
+
+
+def test_each_chunk_is_scheduled_after_the_audio_before_it():
+    scheduler, sent = _scheduler()
+    scheduler.add(silence_pcm16(RATE, 0.2), RATE)
+    scheduler.add(to_pcm16(_tone(0.12, -20)), RATE)
     (first_at, first), (second_at, second) = sent
     assert first == [[4, 0.2]] and second == [[0, 0.12]]
-    assert abs(second_at - first_at - 0.2) < 1e-6  # the second chunk starts after the first one's audio
+    assert abs(second_at - first_at - 0.2) < 1e-6
 
 
 def test_a_late_chunk_plays_on_arrival_not_on_the_stale_schedule():
-    callbacks = visemes.VisemeStreamCallbacks(MagicMock(), play_args=["cat"])
-    sent = []
-    callbacks._schedule = lambda plays_at, pairs: sent.append(plays_at)
     times = iter([100.0, 101.0])  # the 0.2 s pad is written at t=100, the next chunk only arrives at t=101
-    callbacks._clock = PlaybackClock(now=lambda: next(times))
-    with patch.object(visemes.StreamingTTSCallbacks, "stream_chunk"):
-        callbacks.stream_chunk(wav_stream_header(RATE) + silence_pcm16(RATE, 0.2))
-        callbacks.stream_chunk(to_pcm16(_tone(0.12, -20)))
-    latency = callbacks._clock.latency
-    assert sent == [100.0 + latency, 101.0 + latency]
+    scheduler, sent = _scheduler(now=lambda: next(times))
+    scheduler.add(silence_pcm16(RATE, 0.2), RATE)
+    scheduler.add(to_pcm16(_tone(0.12, -20)), RATE)
+    assert [at for at, _ in sent] == [100.1, 101.1]
 
 
 def test_scheduled_visemes_reach_the_bus():
     bus = MagicMock()
-    callbacks = visemes.VisemeStreamCallbacks(bus, play_args=["cat"])
-    callbacks._message = MagicMock()
-    callbacks._schedule(time.monotonic(), [[0, 0.1]])
-    callbacks._timers[0].join(1)
-    name, data = callbacks._message.forward.call_args.args
+    scheduler = visemes.VisemeScheduler(bus)
+    message = MagicMock()
+    scheduler.start(message, latency=0.0)
+    scheduler._schedule(time.monotonic(), [[0, 0.1]])
+    scheduler._timers[0].join(1)
+    name, data = message.forward.call_args.args
     assert name == visemes.VISEME_MESSAGE and data["visemes"] == [[0, 0.1]]
     bus.emit.assert_called_once()

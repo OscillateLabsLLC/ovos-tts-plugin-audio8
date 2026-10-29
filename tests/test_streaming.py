@@ -143,7 +143,8 @@ def test_get_tts_synthesizes_each_sentence(tmp_path):
 
 
 def _init_streaming(config):
-    plugin = Audio8TTSPlugin(config={"lang": "en-us", "preload": False, "enable_streaming": True, **config})
+    plugin = Audio8TTSPlugin(config={"lang": "en-us", "preload": False, "enable_streaming": True,
+                                     "stream_player": "ffplay", **config})
     with patch("shutil.which", return_value="/opt/homebrew/bin/ffplay"), patch.object(tts.TTS, "playback", None):
         plugin.init(bus=MagicMock(), playback=MagicMock())
     return plugin
