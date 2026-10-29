@@ -1,0 +1,12 @@
+.venv/
+.DS_Store
+__pycache__/
+*.pyc
+.coverage
+.pytest_cache/
+.ruff_cache/
+dist/
+bench/
+# Reference clips and rendered samples may be copyrighted audio — keep them local.
+voices/*.wav
+samples/
