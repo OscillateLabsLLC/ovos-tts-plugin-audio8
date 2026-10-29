@@ -65,7 +65,8 @@ def test_cloned_voice_passes_codes_through_processor():
     engine.model.decode_audio.return_value = (torch.zeros(1, 10), torch.tensor([10]))
     engine.model.generate.return_value.codes = torch.zeros((1, 10, 5), dtype=torch.long)
     voice = tts.VoiceProfile("/voices/seven.wav", "Regeneration cycle complete.")
-    with patch.object(tts, "_encode_reference", return_value="CODES"):
+    with patch.object(tts, "_encode_reference", return_value="CODES"), \
+            patch.object(tts, "_voice_gain_for", return_value=1.0):
         audio = tts._synthesize(engine, "Engage.", voice, {}, decoder="model")
     assert audio.shape == (10,)
     assert engine.model.decode_audio.call_args.args[0].shape[-1] == 4  # junk final frame dropped

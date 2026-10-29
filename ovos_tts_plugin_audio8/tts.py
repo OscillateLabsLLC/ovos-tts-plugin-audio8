@@ -11,6 +11,7 @@ from ovos_plugin_manager.templates.tts import TTS, StreamingTTS
 from ovos_utils.log import LOG
 
 from ovos_tts_plugin_audio8.chunking import CostModel, PlaybackClock
+from ovos_tts_plugin_audio8.loudness import voice_gain
 from ovos_tts_plugin_audio8.prewarm import Prewarmer
 from ovos_tts_plugin_audio8.streaming import (
     STREAM_PAD_SECONDS,
@@ -37,6 +38,7 @@ _WARMUP_SENTENCE = "Ready."
 # (model_id, revision, device) and (engine id, reference_audio path).
 _engines: Dict[tuple, "Audio8Engine"] = {}
 _reference_codes: Dict[tuple, "object"] = {}
+_voice_gains: Dict[tuple, float] = {}
 
 
 @dataclass(frozen=True)
@@ -157,7 +159,18 @@ def _encode_reference(engine: Audio8Engine, voice: VoiceProfile):
         lengths = torch.tensor([audio.numel()], device=engine.device)
         codes, code_lengths = engine.model.encode_audio(audio.view(1, 1, -1).to(engine.device), lengths)
         _reference_codes[key] = codes[0, :, : int(code_lengths[0])].cpu()
+        _voice_gains[key] = voice_gain(audio.numpy(), engine.processor.audio_sampling_rate)
+        LOG.info("Audio8 voice %s: output gain %+.1f dB", voice.reference_audio,
+                 20 * np.log10(_voice_gains[key]))
     return _reference_codes[key]
+
+
+def _voice_gain_for(engine: Audio8Engine, voice: VoiceProfile) -> float:
+    """Gain that brings this voice to the shared output level; the model's own voice is left as is."""
+    if not voice.is_cloned:
+        return 1.0
+    _encode_reference(engine, voice)
+    return _voice_gains[(id(engine), voice.reference_audio)]
 
 
 def _build_inputs(engine: Audio8Engine, sentence: str, voice: VoiceProfile) -> dict:
@@ -193,7 +206,7 @@ def _synthesize(engine: Audio8Engine, sentence: str, voice: VoiceProfile, gen_kw
     with torch.inference_mode():
         codes = _generate_codes(engine, inputs, gen_kwargs, decoder)
         waveforms, lengths = engine.model.decode_audio(codes[..., : playable_frames(codes.shape[-1])])
-    return waveforms[0, : int(lengths[0])].float().cpu().numpy()
+    return waveforms[0, : int(lengths[0])].float().cpu().numpy() * _voice_gain_for(engine, voice)
 
 
 # OPM's default `ffplay -autoexit -nodisp -` probes ~2 s of piped input before it starts playing
@@ -221,7 +234,9 @@ def _stream_sentence(engine: Audio8Engine, sentence: str, voice: VoiceProfile, g
     inputs = _build_inputs(engine, sentence, voice)
     sampling = {key: gen_kwargs[key] for key in ("top_k", "top_p", "temperature")}
     frame_decoder = engine.frame_decoder(decoder, **sampling)
-    yield from stream_codes_to_audio(engine.model, frame_decoder, inputs, gen_kwargs["max_new_tokens"], clock, cost)
+    gain = _voice_gain_for(engine, voice)
+    for chunk in stream_codes_to_audio(engine.model, frame_decoder, inputs, gen_kwargs["max_new_tokens"], clock, cost):
+        yield chunk * gain
 
 
 def _resample(audio: np.ndarray, native_rate: int, target_rate: int) -> np.ndarray:
@@ -381,6 +396,7 @@ class Audio8TTSPlugin(StreamingTTS):
     def shutdown(self):
         _engines.clear()
         _reference_codes.clear()
+        _voice_gains.clear()
 
     @classmethod
     def available_languages(cls) -> set:

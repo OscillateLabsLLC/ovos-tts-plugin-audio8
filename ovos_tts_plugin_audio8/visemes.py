@@ -1,8 +1,8 @@
 """Loudness-driven mouth movement for Audio8, which has no phoneme alignment of its own.
 
 Each 40 ms window's RMS picks a Mycroft viseme code on an openness ladder: closed (4), half
-open (3), rounded (2), wide (0). Thresholds sit at percentiles of measured Audio8 speech
-(median window -35.6 dBFS, quartiles -42 and -30; silence below -50).
+open (3), rounded (2), wide (0). Steps sit at percentiles of measured Audio8 speech (about the
+70th, 40th and 15th), expressed relative to the normalized speech level in loudness.py.
 """
 
 import struct
@@ -15,11 +15,14 @@ from ovos_bus_client.message import Message, dig_for_message
 from ovos_plugin_manager.templates.tts import StreamingTTSCallbacks
 
 from ovos_tts_plugin_audio8.chunking import PlaybackClock
+from ovos_tts_plugin_audio8.loudness import TARGET_SPEECH_DB
 
 
 WINDOW_SECONDS = 0.04
 REST_CODE = 4
-_LADDER = ((-31.0, 0), (-37.0, 2), (-44.0, 3))  # (minimum RMS dBFS, code), loudest first
+# (minimum RMS dB relative to the speech median, code), loudest first. Measured on speech with a
+# -35.6 dB median: wide from -31, round from -37, half open from -44.
+_LADDER = ((TARGET_SPEECH_DB + 4.6, 0), (TARGET_SPEECH_DB - 1.4, 2), (TARGET_SPEECH_DB - 8.4, 3))
 VISEME_MESSAGE = "enclosure.mouth.viseme_list"
 _WAV_HEADER_BYTES = 44
 

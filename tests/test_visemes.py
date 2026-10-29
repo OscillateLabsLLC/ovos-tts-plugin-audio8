@@ -5,6 +5,7 @@ import numpy as np
 
 from ovos_tts_plugin_audio8 import visemes
 from ovos_tts_plugin_audio8.chunking import PlaybackClock
+from ovos_tts_plugin_audio8.loudness import TARGET_SPEECH_DB
 from ovos_tts_plugin_audio8.streaming import silence_pcm16, to_pcm16, wav_stream_header
 
 
@@ -16,11 +17,13 @@ def _tone(seconds: float, rms_db: float) -> np.ndarray:
     return (amplitude * np.sin(2 * np.pi * 220 * np.arange(int(RATE * seconds)) / RATE)).astype(np.float32)
 
 
-def test_loudness_ladder_maps_silence_to_rest_and_loud_to_wide_open():
+def test_loudness_ladder_is_relative_to_the_normalized_speech_level():
+    speech = TARGET_SPEECH_DB
     assert visemes.loudness_visemes(np.zeros(RATE // 10, dtype=np.float32), RATE) == [[4, 0.1]]
-    assert visemes.loudness_visemes(_tone(0.08, -20), RATE)[0][0] == 0
-    assert visemes.loudness_visemes(_tone(0.08, -34), RATE)[0][0] == 2
-    assert visemes.loudness_visemes(_tone(0.08, -40), RATE)[0][0] == 3
+    assert visemes.loudness_visemes(_tone(0.08, speech + 8), RATE)[0][0] == 0
+    assert visemes.loudness_visemes(_tone(0.08, speech), RATE)[0][0] == 2  # typical speech: rounded
+    assert visemes.loudness_visemes(_tone(0.08, speech - 5), RATE)[0][0] == 3
+    assert visemes.loudness_visemes(_tone(0.08, speech - 12), RATE)[0][0] == 4
 
 
 def test_runs_merge_and_end_times_are_cumulative():
