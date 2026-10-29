@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from ovos_tts_plugin_audio8 import Audio8TTSPlugin, Audio8TTSPluginConfig, tts
+from ovos_tts_plugin_audio8 import Audio8TTSPlugin, Audio8TTSPluginConfig, tts, visemes
 
 
 VOICES = {
@@ -49,7 +49,8 @@ def test_get_tts_writes_resampled_pcm16(plugin, tmp_path):
     out = tmp_path / "out.wav"
     with patch.object(tts, "_get_engine", return_value=engine), patch.object(tts, "_synthesize", return_value=audio):
         result = plugin.get_tts("Engage.", str(out))
-    assert result == (str(out), None)
+    assert result[0] == str(out)
+    assert visemes.decode_visemes(result[1])[-1] == [0, 1.0]  # constant 0.5 amplitude: wide open for 1 s
     with wave.open(str(out)) as wf:
         assert (wf.getsampwidth(), wf.getnchannels(), wf.getframerate()) == (2, 1, tts.DEFAULT_SAMPLE_RATE)
         assert wf.getnframes() == tts.DEFAULT_SAMPLE_RATE

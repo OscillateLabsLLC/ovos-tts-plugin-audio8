@@ -7,7 +7,7 @@ from typing import AsyncIterable, Dict, Iterator, Optional, Tuple
 
 import numpy as np
 import quebra_frases
-from ovos_plugin_manager.templates.tts import TTS, StreamingTTS, StreamingTTSCallbacks
+from ovos_plugin_manager.templates.tts import TTS, StreamingTTS
 from ovos_utils.log import LOG
 
 from ovos_tts_plugin_audio8.streaming import (
@@ -18,6 +18,7 @@ from ovos_tts_plugin_audio8.streaming import (
     to_pcm16,
     wav_stream_header,
 )
+from ovos_tts_plugin_audio8.visemes import VisemeStreamCallbacks, decode_visemes, encode_visemes, loudness_visemes
 
 
 DEFAULT_MODEL_ID = "Edge0/Audio8-TTS-Realistic-0.6b"
@@ -287,8 +288,12 @@ class Audio8TTSPlugin(StreamingTTS):
             return
         super().init(bus, playback, callbacks)
         if callbacks is None:
-            self.callbacks = StreamingTTSCallbacks(self.bus, play_args=_stream_player_args(self.config),
+            self.callbacks = VisemeStreamCallbacks(self.bus, play_args=_stream_player_args(self.config),
                                                    tts_config=self.config)
+
+    def viseme(self, phonemes):
+        """get_tts puts loudness visemes in the phonemes slot, already as [code, cumulative end] pairs."""
+        return decode_visemes(phonemes)
 
     async def stream_tts(self, sentence: str, lang: str = None, voice: str = None) -> AsyncIterable[bytes]:
         """Yield a streaming WAV (44.1 kHz, 16-bit mono): header first, then PCM as it is decoded.
@@ -342,7 +347,7 @@ class Audio8TTSPlugin(StreamingTTS):
             "top_k": int(self.config.get("top_k", 50)),
         }
 
-    def get_tts(self, sentence: str, wav_file: str, lang: str = None, voice: str = None) -> Tuple[str, None]:
+    def get_tts(self, sentence: str, wav_file: str, lang: str = None, voice: str = None) -> Tuple[str, str]:
         engine = self._engine
         profile, decoder = self._resolve_voice(voice), self._decoder_for(engine)
         # OVOS only sentence-splits when `sentence_tokenize` is set, so long utterances arrive whole.
@@ -351,8 +356,9 @@ class Audio8TTSPlugin(StreamingTTS):
         audio = np.concatenate([_synthesize(engine, part, profile, self._generation_kwargs, decoder)
                                 for part in parts])
         target_rate = int(self.config.get("sample_rate", DEFAULT_SAMPLE_RATE))
-        _write_pcm16_wav(wav_file, _resample(audio, engine.sample_rate, target_rate), target_rate)
-        return wav_file, None
+        audio = _resample(audio, engine.sample_rate, target_rate)
+        _write_pcm16_wav(wav_file, audio, target_rate)
+        return wav_file, encode_visemes(loudness_visemes(audio, target_rate))
 
     def shutdown(self):
         _engines.clear()

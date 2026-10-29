@@ -98,6 +98,9 @@ play each sentence before the plugin has finished generating it.
 - Each chunk decodes the sentence again from its first frame. The codec looks back over the whole
   sentence, so this is the only exact way to decode in chunks. Chunk sizes double (12, 24, 48 …
   frames), so the extra codec work is about one more full decode. RTF goes from 0.54 to 0.64 on MPS.
+- Mouth movement: the model gives no phoneme timing, so the plugin sends visemes from the audio level
+  in 40 ms steps (closed, half open, round, wide). With streaming, each chunk's visemes go out when that
+  chunk starts to play. Without streaming, the visemes travel with the WAV and are kept in the OVOS cache.
 - Streaming works only when the plugin runs inside `ovos-audio`. The Neon Hub (`neon-audio`) and
   `ovos-tts-server` 1.15 always request complete files.
 
