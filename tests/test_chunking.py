@@ -1,4 +1,11 @@
-from ovos_tts_plugin_audio8.chunking import CostModel, PlaybackClock, should_emit, sustainable_chunk
+from ovos_tts_plugin_audio8.chunking import (
+    SAFETY_SECONDS,
+    STARTUP_CHUNK_FRAMES,
+    CostModel,
+    PlaybackClock,
+    should_emit,
+    sustainable_chunk,
+)
 
 
 def test_clock_queues_back_to_back_and_restarts_after_running_dry():
@@ -30,15 +37,18 @@ def _cost(generate=0.02, decode=0.005):
 
 
 def _queued(seconds):
+    """A frozen mid-utterance clock with `seconds` of audio queued."""
     clock = PlaybackClock(latency=0.0, now=lambda: 0.0)
     clock.playhead = seconds
+    clock.speech_written = True
     return clock
 
 
 def test_emits_when_waiting_would_starve_and_not_before():
-    # Waiting costs 8 * 0.02 + 108 * 0.005 + 0.15 = 0.85 s of queued audio; 40 pending frames is sustainable.
-    assert should_emit(40, 100, 8, FRAME, _queued(0.8), _cost())
-    assert not should_emit(40, 100, 8, FRAME, _queued(0.9), _cost())
+    # Waiting costs 8 * 0.02 + 108 * 0.005 + SAFETY_SECONDS of queued audio; 40 pending frames is sustainable.
+    threshold = 8 * 0.02 + 108 * 0.005 + SAFETY_SECONDS
+    assert should_emit(40, 100, 8, FRAME, _queued(threshold - 0.05), _cost())
+    assert not should_emit(40, 100, 8, FRAME, _queued(threshold + 0.05), _cost())
 
 
 def test_never_emits_a_chunk_too_small_to_keep_up():
@@ -51,8 +61,9 @@ def test_never_emits_a_chunk_too_small_to_keep_up():
 def test_the_first_chunk_of_an_utterance_is_larger():
     fresh = _queued(0.0)
     fresh.speech_written = False
-    assert not should_emit(10, 10, 8, FRAME, fresh, _cost(decode=0.0))
-    assert should_emit(15, 15, 8, FRAME, fresh, _cost(decode=0.0))
+    first = STARTUP_CHUNK_FRAMES
+    assert not should_emit(first - 1, first - 1, 8, FRAME, fresh, _cost(decode=0.0))
+    assert should_emit(first, first, 8, FRAME, fresh, _cost(decode=0.0))
 
 
 def test_generation_slower_than_real_time_waits_for_one_final_decode():

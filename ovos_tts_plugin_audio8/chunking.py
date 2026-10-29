@@ -15,11 +15,15 @@ from typing import Callable
 EOS_CHECK_INTERVAL = 8
 # ffplay with low-latency flags: playback starts ~0.2 s after the first write and drops ~0.1 s.
 STREAM_PLAYBACK_LATENCY = 0.1
-SAFETY_SECONDS = 0.15
+# Audio kept queued beyond the estimated cost of waiting. ffplay discards ~0.4 s and resyncs when a chunk
+# lands as its buffer runs dry (heard as a clip; measured played-vs-sent), so stay well clear of empty.
+SAFETY_SECONDS = 0.5
 MIN_CHUNK_FRAMES = 6
-# The utterance's first chunk must outlast making the second one; 7 frames (0.33 s) left 0.1-0.2 s gaps
-# while the stream ramped up on MPS. Costs ~0.2 s of time to first audio.
-STARTUP_CHUNK_FRAMES = 15
+# The utterance's first chunk is the only lead the player has while the stream ramps up. On MPS, 15
+# frames (0.70 s) still ran dry ~2 s in, where ffplay then discarded audio (heard as a clip on the
+# weather line). 31 frames (1.44 s; checks land on 8k-1) left no gap inside speech on the measured lines,
+# at ~1.0 s to first audio instead of ~0.56 s.
+STARTUP_CHUNK_FRAMES = 31
 CHUNK_MARGIN = 1.5
 _SMOOTHING = 0.5
 # Starting estimates from M3 Max MPS measurements; replaced by observations within a few checks.
