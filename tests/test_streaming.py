@@ -7,6 +7,7 @@ import pytest
 import torch
 
 from ovos_tts_plugin_audio8 import Audio8TTSPlugin, streaming, tts
+from ovos_tts_plugin_audio8.chunking import CostModel, PlaybackClock, sustainable_chunk
 
 
 FRAME_SAMPLES = 4
@@ -18,7 +19,7 @@ class FakeCausalCodecModel:
     Any chunking that decodes a window not starting at frame 0 produces wrong samples here.
     """
 
-    config = SimpleNamespace(codec_frame_size=FRAME_SAMPLES)
+    config = SimpleNamespace(codec_frame_size=FRAME_SAMPLES, codec_sample_rate=86)  # ~46 ms frames, like Audio8
 
     def decode_audio(self, codes):
         values = torch.cumsum(codes[0, 0].double(), dim=0)
@@ -36,24 +37,63 @@ class FakeDecoder:
         yield self.total
 
 
-@pytest.mark.parametrize("total_frames", [5, 12, 100, 301])
-def test_streamed_chunks_equal_full_decode(total_frames):
+def _clock(queued_seconds: float) -> PlaybackClock:
+    """A frozen clock with `queued_seconds` of audio waiting in the player, mid-utterance."""
+    clock = PlaybackClock(latency=0.0, now=lambda: 0.0)
+    clock.playhead = queued_seconds
+    clock.speech_written = True
+    return clock
+
+
+class FixedCost(CostModel):
+    """MPS-like costs that the instant fakes cannot overwrite."""
+
+    def __init__(self, decode=0.005):
+        super().__init__()
+        self.generate, self.decode = 0.025, decode
+
+    def observe_generation(self, frames, seconds):
+        pass
+
+    def observe_decode(self, frames, seconds):
+        pass
+
+
+def _chunk_frames(total_frames: int, queued_seconds: float, cost=None):
     model, decoder = FakeCausalCodecModel(), FakeDecoder(total_frames)
-    chunks = list(streaming.stream_codes_to_audio(model, decoder, {}, 1024))
+    chunks = streaming.stream_codes_to_audio(model, decoder, {}, 1024, _clock(queued_seconds), cost or FixedCost())
+    return [len(chunk) // FRAME_SAMPLES for chunk in chunks], model, decoder
+
+
+@pytest.mark.parametrize("queued_seconds", [0.0, 100.0])
+@pytest.mark.parametrize("total_frames", [5, 12, 100, 301])
+def test_streamed_chunks_equal_full_decode(total_frames, queued_seconds):
+    model, decoder = FakeCausalCodecModel(), FakeDecoder(total_frames)
+    chunks = streaming.stream_codes_to_audio(model, decoder, {}, 1024, _clock(queued_seconds), CostModel())
     playable = total_frames - streaming.TRAILING_JUNK_FRAMES
     full = model.decode_audio(decoder.codes_out[:, :playable].unsqueeze(0))[0][0].numpy()
-    np.testing.assert_array_equal(np.concatenate(chunks), full)
+    np.testing.assert_array_equal(np.concatenate(list(chunks)), full)
 
 
-def test_first_chunk_is_small_then_chunks_double():
-    model, decoder = FakeCausalCodecModel(), FakeDecoder(400)
-    sizes = [len(chunk) // FRAME_SAMPLES for chunk in streaming.stream_codes_to_audio(model, decoder, {}, 1024)]
-    assert streaming.FIRST_CHUNK_FRAMES <= sizes[0] < 2 * streaming.FIRST_CHUNK_FRAMES
+def test_a_starving_player_gets_chunks_that_grow_with_the_prefix():
+    sizes, _, _ = _chunk_frames(300, queued_seconds=0.0)
+    assert sizes[0] == 8 - streaming.TRAILING_JUNK_FRAMES  # the very first check, holding back the newest frame
     emitted = sizes[0]
     for size in sizes[1:-1]:
-        assert size >= emitted * (streaming.CHUNK_GROWTH - 1)
+        assert size >= sustainable_chunk(emitted + size, 4 / 86, FixedCost())
         emitted += size
-    assert sum(sizes) == 400 - streaming.TRAILING_JUNK_FRAMES
+    assert sizes[-2] > sizes[1]
+    assert sum(sizes) == 300 - streaming.TRAILING_JUNK_FRAMES
+
+
+def test_cheap_decoding_streams_at_every_check():
+    sizes, _, _ = _chunk_frames(100, queued_seconds=0.0, cost=FixedCost(decode=0.0))
+    assert all(size == 8 for size in sizes[1:-1])
+
+
+def test_a_well_fed_player_waits_for_one_final_decode():
+    sizes, _, _ = _chunk_frames(100, queued_seconds=100.0)
+    assert sizes == [100 - streaming.TRAILING_JUNK_FRAMES]
 
 
 def test_finalized_stream_header_is_a_valid_wav(tmp_path):

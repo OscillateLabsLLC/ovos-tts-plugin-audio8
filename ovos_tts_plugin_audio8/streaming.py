@@ -3,19 +3,19 @@
 The codec is causal, so decoding a *prefix* of the codes reproduces the full-utterance samples
 exactly (measured to float noise on CPU and MPS). A bounded left-context window does not:
 its stacked windowed attention sees the whole utterance (error still 1e-3 with 256 frames of
-context). So every chunk re-decodes from the sentence start and emits only the new samples.
-Chunk sizes double, which keeps the total codec work near twice one full decode.
+context). So every chunk re-decodes from the sentence start and emits only the new samples;
+chunking.py decides when.
 """
 
 import struct
+import time
 from typing import Iterator
 
 import numpy as np
 
+from ovos_tts_plugin_audio8.chunking import EOS_CHECK_INTERVAL, CostModel, PlaybackClock, should_emit
 
-# Small first chunk for time-to-first-audio; doubling after that bounds the re-decode cost.
-FIRST_CHUNK_FRAMES = 12
-CHUNK_GROWTH = 2
+
 # The model's last frame before EOS decodes to a rising burst (-20 dB after near-silence) in every
 # sentence measured, so it is never played; streaming holds the newest frame back until another follows.
 TRAILING_JUNK_FRAMES = 1
@@ -61,20 +61,31 @@ def playable_frames(frames: int) -> int:
     return max(0, frames - TRAILING_JUNK_FRAMES)
 
 
-def stream_codes_to_audio(model, decoder, inputs: dict, max_new_tokens: int) -> Iterator[np.ndarray]:
-    """Yield float32 audio chunks at the codec rate as soon as enough frames exist."""
+def stream_codes_to_audio(model, decoder, inputs: dict, max_new_tokens: int, clock: PlaybackClock,
+                          cost: CostModel) -> Iterator[np.ndarray]:
+    """Yield float32 audio chunks at the codec rate, each just before the player would run dry.
+
+    The caller adds every chunk it writes (including silence) to `clock`.
+    """
     frame_samples = int(model.config.codec_frame_size)
-    emitted, target, frames = 0, FIRST_CHUNK_FRAMES, 0
+    frame_seconds = frame_samples / int(model.config.codec_sample_rate)
+    emitted = frames = generated = 0
+    resumed = time.monotonic()
     for frames in decoder.iter_generate(inputs, max_new_tokens):
-        ready = playable_frames(frames)
-        if ready >= target:
-            yield _decode_new_frames(model, decoder.codes_out, emitted, ready, frame_samples)
-            emitted, target = ready, ready * CHUNK_GROWTH
+        cost.observe_generation(frames - generated, time.monotonic() - resumed)
+        generated, ready = frames, playable_frames(frames)
+        if should_emit(ready - emitted, ready, EOS_CHECK_INTERVAL, frame_seconds, clock, cost):
+            yield _decode_new_frames(model, decoder.codes_out, emitted, ready, frame_samples, cost)
+            emitted = ready
+        resumed = time.monotonic()
     final = playable_frames(frames)
     if final > emitted:
-        yield _decode_new_frames(model, decoder.codes_out, emitted, final, frame_samples)
+        yield _decode_new_frames(model, decoder.codes_out, emitted, final, frame_samples, cost)
 
 
-def _decode_new_frames(model, codes, emitted: int, frames: int, frame_samples: int) -> np.ndarray:
+def _decode_new_frames(model, codes, emitted: int, frames: int, frame_samples: int, cost: CostModel) -> np.ndarray:
+    started = time.monotonic()
     waveforms, lengths = model.decode_audio(codes[:, :frames].clone().unsqueeze(0))
-    return waveforms[0, emitted * frame_samples: int(lengths[0])].float().cpu().numpy()
+    audio = waveforms[0, emitted * frame_samples: int(lengths[0])].float().cpu().numpy()
+    cost.observe_decode(frames, time.monotonic() - started)  # .cpu() synchronizes, so this is real decode time
+    return audio

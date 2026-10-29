@@ -10,7 +10,9 @@ import quebra_frases
 from ovos_plugin_manager.templates.tts import TTS, StreamingTTS
 from ovos_utils.log import LOG
 
+from ovos_tts_plugin_audio8.chunking import CostModel, PlaybackClock
 from ovos_tts_plugin_audio8.streaming import (
+    STREAM_PAD_SECONDS,
     finalize_wav_header,
     playable_frames,
     silence_pcm16,
@@ -211,7 +213,7 @@ def _split_sentences(utterance: str) -> list:
 
 
 def _stream_sentence(engine: Audio8Engine, sentence: str, voice: VoiceProfile, gen_kwargs: dict,
-                     decoder: str) -> Iterator[np.ndarray]:
+                     decoder: str, clock: PlaybackClock, cost: CostModel) -> Iterator[np.ndarray]:
     """Yield codec-rate audio chunks for one sentence as frames are generated."""
     if decoder == "model":
         # Upstream generate() has no incremental hook; stream the sentence as one chunk.
@@ -220,7 +222,7 @@ def _stream_sentence(engine: Audio8Engine, sentence: str, voice: VoiceProfile, g
     inputs = _build_inputs(engine, sentence, voice)
     sampling = {key: gen_kwargs[key] for key in ("top_k", "top_p", "temperature")}
     frame_decoder = engine.frame_decoder(decoder, **sampling)
-    yield from stream_codes_to_audio(engine.model, frame_decoder, inputs, gen_kwargs["max_new_tokens"])
+    yield from stream_codes_to_audio(engine.model, frame_decoder, inputs, gen_kwargs["max_new_tokens"], clock, cost)
 
 
 def _resample(audio: np.ndarray, native_rate: int, target_rate: int) -> np.ndarray:
@@ -301,13 +303,16 @@ class Audio8TTSPlugin(StreamingTTS):
         The utterance is split into sentences like get_tts does.
         """
         engine = self._engine
-        profile = self._resolve_voice(voice)
-        decoder = self._decoder_for(engine)
-        yield wav_stream_header(engine.sample_rate) + silence_pcm16(engine.sample_rate)
+        profile, decoder, rate = self._resolve_voice(voice), self._decoder_for(engine), engine.sample_rate
+        clock, cost = PlaybackClock(), CostModel()  # shared by every sentence: the player's queue spans them
+        clock.add(STREAM_PAD_SECONDS)
+        yield wav_stream_header(rate) + silence_pcm16(rate)
         for part in _split_sentences(sentence):
-            for chunk in _stream_sentence(engine, part, profile, self._generation_kwargs, decoder):
+            for chunk in _stream_sentence(engine, part, profile, self._generation_kwargs, decoder, clock, cost):
+                clock.add(len(chunk) / rate)
+                clock.speech_written = True
                 yield to_pcm16(chunk)
-        yield silence_pcm16(engine.sample_rate)
+        yield silence_pcm16(rate)
 
     async def generate_audio(self, sentence, wav_file, play_streaming=True, listen=False, message=None,
                              plugin_kwargs=None):

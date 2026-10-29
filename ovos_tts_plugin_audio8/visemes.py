@@ -14,14 +14,13 @@ import numpy as np
 from ovos_bus_client.message import Message, dig_for_message
 from ovos_plugin_manager.templates.tts import StreamingTTSCallbacks
 
+from ovos_tts_plugin_audio8.chunking import PlaybackClock
+
 
 WINDOW_SECONDS = 0.04
 REST_CODE = 4
 _LADDER = ((-31.0, 0), (-37.0, 2), (-44.0, 3))  # (minimum RMS dBFS, code), loudest first
 VISEME_MESSAGE = "enclosure.mouth.viseme_list"
-# Measured with ffplay's low-latency flags: the playback clock starts ~0.2 s after the first write and the
-# first ~0.1 s of samples are dropped (covered by the stream's silence pad), so sample 0 sounds ~0.1 s late.
-STREAM_PLAYBACK_LATENCY = 0.1
 _WAV_HEADER_BYTES = 44
 
 
@@ -65,14 +64,12 @@ class VisemeStreamCallbacks(StreamingTTSCallbacks):
         super().__init__(bus, play_args=play_args, tts_config=tts_config)
         self.sample_rate: Optional[int] = None  # read from each stream's WAV header
         self._timers: List[threading.Timer] = []
-        # When the audio written so far finishes playing (monotonic clock). A chunk that arrives after that
-        # plays on arrival: the player idles through the gap rather than catching up.
-        self._playhead = 0.0
+        self._clock = PlaybackClock()
         self._message = None
 
     def stream_start(self, message=None):
         self._cancel_timers()
-        self._playhead = 0.0
+        self._clock = PlaybackClock(now=self._clock.now)
         self._message = message or dig_for_message() or Message("speak")
         super().stream_start(message)
 
@@ -85,8 +82,7 @@ class VisemeStreamCallbacks(StreamingTTSCallbacks):
         if not pcm or self.sample_rate is None:
             return
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768
-        plays_at = max(self._playhead, time.monotonic() + STREAM_PLAYBACK_LATENCY)
-        self._playhead = plays_at + len(audio) / self.sample_rate
+        plays_at = self._clock.add(len(audio) / self.sample_rate)
         self._schedule(plays_at, loudness_visemes(audio, self.sample_rate))
 
     def stream_stop(self, listen=False, message=None):

@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from ovos_tts_plugin_audio8 import visemes
+from ovos_tts_plugin_audio8.chunking import PlaybackClock
 from ovos_tts_plugin_audio8.streaming import silence_pcm16, to_pcm16, wav_stream_header
 
 
@@ -52,12 +53,12 @@ def test_a_late_chunk_plays_on_arrival_not_on_the_stale_schedule():
     callbacks = visemes.VisemeStreamCallbacks(MagicMock(), play_args=["cat"])
     sent = []
     callbacks._schedule = lambda plays_at, pairs: sent.append(plays_at)
-    clock = iter([100.0, 101.0])  # the 0.2 s pad is written at t=100, the next chunk only arrives at t=101
-    with patch.object(visemes.StreamingTTSCallbacks, "stream_chunk"), patch.object(visemes.time, "monotonic",
-                                                                                 lambda: next(clock)):
+    times = iter([100.0, 101.0])  # the 0.2 s pad is written at t=100, the next chunk only arrives at t=101
+    callbacks._clock = PlaybackClock(now=lambda: next(times))
+    with patch.object(visemes.StreamingTTSCallbacks, "stream_chunk"):
         callbacks.stream_chunk(wav_stream_header(RATE) + silence_pcm16(RATE, 0.2))
         callbacks.stream_chunk(to_pcm16(_tone(0.12, -20)))
-    latency = visemes.STREAM_PLAYBACK_LATENCY
+    latency = callbacks._clock.latency
     assert sent == [100.0 + latency, 101.0 + latency]
 
 

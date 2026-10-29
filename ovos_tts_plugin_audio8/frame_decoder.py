@@ -18,9 +18,9 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from ovos_tts_plugin_audio8.chunking import EOS_CHECK_INTERVAL
 
-# Frames run between host syncs that look for EOS. Frames past EOS are discarded.
-_EOS_CHECK_INTERVAL = 8
+
 _WARMUP_FRAMES = 3
 
 
@@ -196,7 +196,7 @@ class FrameDecoder:
     def _run_until_eos(self, budget: int):
         steps = 0
         while steps < budget:
-            batch = min(_EOS_CHECK_INTERVAL, budget - steps)
+            batch = min(EOS_CHECK_INTERVAL, budget - steps)
             for _ in range(batch):
                 self._step()
             steps += batch
