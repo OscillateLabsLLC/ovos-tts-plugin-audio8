@@ -40,7 +40,8 @@ class FakeDecoder:
 def test_streamed_chunks_equal_full_decode(total_frames):
     model, decoder = FakeCausalCodecModel(), FakeDecoder(total_frames)
     chunks = list(streaming.stream_codes_to_audio(model, decoder, {}, 1024))
-    full = model.decode_audio(decoder.codes_out[:, :total_frames].unsqueeze(0))[0][0].numpy()
+    playable = total_frames - streaming.TRAILING_JUNK_FRAMES
+    full = model.decode_audio(decoder.codes_out[:, :playable].unsqueeze(0))[0][0].numpy()
     np.testing.assert_array_equal(np.concatenate(chunks), full)
 
 
@@ -52,7 +53,7 @@ def test_first_chunk_is_small_then_chunks_double():
     for size in sizes[1:-1]:
         assert size >= emitted * (streaming.CHUNK_GROWTH - 1)
         emitted += size
-    assert sum(sizes) == 400
+    assert sum(sizes) == 400 - streaming.TRAILING_JUNK_FRAMES
 
 
 def test_finalized_stream_header_is_a_valid_wav(tmp_path):

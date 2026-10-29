@@ -12,6 +12,8 @@ from ovos_utils.log import LOG
 
 from ovos_tts_plugin_audio8.streaming import (
     finalize_wav_header,
+    playable_frames,
+    silence_pcm16,
     stream_codes_to_audio,
     to_pcm16,
     wav_stream_header,
@@ -185,7 +187,7 @@ def _synthesize(engine: Audio8Engine, sentence: str, voice: VoiceProfile, gen_kw
     inputs = _build_inputs(engine, sentence, voice)
     with torch.inference_mode():
         codes = _generate_codes(engine, inputs, gen_kwargs, decoder)
-        waveforms, lengths = engine.model.decode_audio(codes)
+        waveforms, lengths = engine.model.decode_audio(codes[..., : playable_frames(codes.shape[-1])])
     return waveforms[0, : int(lengths[0])].float().cpu().numpy()
 
 
@@ -296,10 +298,11 @@ class Audio8TTSPlugin(StreamingTTS):
         engine = self._engine
         profile = self._resolve_voice(voice)
         decoder = self._decoder_for(engine)
-        yield wav_stream_header(engine.sample_rate)
+        yield wav_stream_header(engine.sample_rate) + silence_pcm16(engine.sample_rate)
         for part in _split_sentences(sentence):
             for chunk in _stream_sentence(engine, part, profile, self._generation_kwargs, decoder):
                 yield to_pcm16(chunk)
+        yield silence_pcm16(engine.sample_rate)
 
     async def generate_audio(self, sentence, wav_file, play_streaming=True, listen=False, message=None,
                              plugin_kwargs=None):

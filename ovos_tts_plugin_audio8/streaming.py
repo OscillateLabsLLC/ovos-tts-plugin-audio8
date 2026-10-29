@@ -16,6 +16,12 @@ import numpy as np
 # Small first chunk for time-to-first-audio; doubling after that bounds the re-decode cost.
 FIRST_CHUNK_FRAMES = 12
 CHUNK_GROWTH = 2
+# The model's last frame before EOS decodes to a rising burst (-20 dB after near-silence) in every
+# sentence measured, so it is never played; streaming holds the newest frame back until another follows.
+TRAILING_JUNK_FRAMES = 1
+# ffplay drops roughly the first 100-140 ms of a piped stream and can clip the last ones at -autoexit,
+# so the stream opens and closes on silence.
+STREAM_PAD_SECONDS = 0.2
 _STREAMING_SIZE = 0xFFFFFFFF
 _RIFF_HEADER_BYTES = 44
 
@@ -47,16 +53,26 @@ def to_pcm16(audio: np.ndarray) -> bytes:
     return (np.clip(audio, -1, 1) * 32767).astype(np.int16).tobytes()
 
 
+def silence_pcm16(sample_rate: int, seconds: float = STREAM_PAD_SECONDS) -> bytes:
+    return bytes(2 * int(sample_rate * seconds))
+
+
+def playable_frames(frames: int) -> int:
+    return max(0, frames - TRAILING_JUNK_FRAMES)
+
+
 def stream_codes_to_audio(model, decoder, inputs: dict, max_new_tokens: int) -> Iterator[np.ndarray]:
     """Yield float32 audio chunks at the codec rate as soon as enough frames exist."""
     frame_samples = int(model.config.codec_frame_size)
     emitted, target, frames = 0, FIRST_CHUNK_FRAMES, 0
     for frames in decoder.iter_generate(inputs, max_new_tokens):
-        if frames >= target:
-            yield _decode_new_frames(model, decoder.codes_out, emitted, frames, frame_samples)
-            emitted, target = frames, frames * CHUNK_GROWTH
-    if frames > emitted:
-        yield _decode_new_frames(model, decoder.codes_out, emitted, frames, frame_samples)
+        ready = playable_frames(frames)
+        if ready >= target:
+            yield _decode_new_frames(model, decoder.codes_out, emitted, ready, frame_samples)
+            emitted, target = ready, ready * CHUNK_GROWTH
+    final = playable_frames(frames)
+    if final > emitted:
+        yield _decode_new_frames(model, decoder.codes_out, emitted, final, frame_samples)
 
 
 def _decode_new_frames(model, codes, emitted: int, frames: int, frame_samples: int) -> np.ndarray:
