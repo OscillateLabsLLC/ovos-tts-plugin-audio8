@@ -1,0 +1,34 @@
+# This workflow will run unit tests
+
+name: Run Unit Tests
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit_tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    # macos-14 keeps torch on the small PyPI wheel instead of the ~2.5 GB Linux CUDA wheel.
+    # Tests use a tiny random-weight model built from the pinned upstream code: they download
+    # config + *.py from Hugging Face, never the 2.6 GB of weights.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+      - name: Install dependencies
+        run: |
+          uv sync --python ${{ matrix.python-version }}
+      - name: Lint
+        run: |
+          uv run ruff check .
+      - name: Test package
+        run: |
+          uv run pytest
