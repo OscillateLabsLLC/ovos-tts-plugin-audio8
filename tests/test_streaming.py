@@ -86,6 +86,23 @@ def test_get_tts_synthesizes_each_sentence(tmp_path):
     assert calls == ["Shields are at forty percent.", "Engage maximum warp."]
 
 
+def _init_streaming(config):
+    plugin = Audio8TTSPlugin(config={"lang": "en-us", "preload": False, "enable_streaming": True, **config})
+    with patch("shutil.which", return_value="/opt/homebrew/bin/ffplay"), patch.object(tts.TTS, "playback", None):
+        plugin.init(bus=MagicMock(), playback=MagicMock())
+    return plugin
+
+
+def test_streaming_init_uses_low_latency_ffplay():
+    args = _init_streaming({}).callbacks.play_args
+    assert args[0] == "/opt/homebrew/bin/ffplay"
+    assert args[args.index("-probesize") + 1] == "32" and args[-1] == "-"
+
+
+def test_stream_player_args_override():
+    assert _init_streaming({"stream_player_args": ["paplay", "-"]}).callbacks.play_args == ["paplay", "-"]
+
+
 def test_init_without_streaming_does_not_need_a_player():
     plugin = Audio8TTSPlugin(config={"lang": "en-us", "preload": False})
     # TTS.init stores the PlaybackThread on the class; patch it so the mock doesn't leak.

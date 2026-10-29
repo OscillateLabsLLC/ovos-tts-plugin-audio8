@@ -1,12 +1,13 @@
 """Audio8 TTS plugin for OVOS — 0.6B DualAR TTS with one-shot voice cloning."""
 
+import shutil
 import wave
 from dataclasses import dataclass
 from typing import AsyncIterable, Dict, Iterator, Optional, Tuple
 
 import numpy as np
 import quebra_frases
-from ovos_plugin_manager.templates.tts import TTS, StreamingTTS
+from ovos_plugin_manager.templates.tts import TTS, StreamingTTS, StreamingTTSCallbacks
 from ovos_utils.log import LOG
 
 from ovos_tts_plugin_audio8.streaming import (
@@ -188,6 +189,20 @@ def _synthesize(engine: Audio8Engine, sentence: str, voice: VoiceProfile, gen_kw
     return waveforms[0, : int(lengths[0])].float().cpu().numpy()
 
 
+# OPM's default `ffplay -autoexit -nodisp -` probes ~2 s of piped input before it starts playing
+# (measured: first sound at 2.33 s vs 0.22 s with these flags, no audio dropped).
+_LOW_LATENCY_FFPLAY_ARGS = ("-autoexit", "-nodisp", "-loglevel", "error",
+                            "-probesize", "32", "-analyzeduration", "0", "-fflags", "nobuffer", "-")
+
+
+def _stream_player_args(config: dict) -> Optional[list]:
+    """Player command for streamed audio; None lets OPM pick paplay/aplay."""
+    if config.get("stream_player_args"):
+        return list(config["stream_player_args"])
+    ffplay = shutil.which("ffplay")
+    return [ffplay, *_LOW_LATENCY_FFPLAY_ARGS] if ffplay else None
+
+
 def _split_sentences(utterance: str) -> list:
     return [part for part in quebra_frases.sentence_tokenize(utterance) if part.strip()] or [utterance]
 
@@ -265,10 +280,13 @@ class Audio8TTSPlugin(StreamingTTS):
     def init(self, bus=None, playback=None, callbacks=None):
         # StreamingTTS.init builds subprocess-player callbacks and raises when no ffplay/paplay/aplay
         # is installed. Only require one when streaming playback is actually enabled.
-        if callbacks or self.config.get("enable_streaming"):
-            super().init(bus, playback, callbacks)
-        else:
+        if not (callbacks or self.config.get("enable_streaming")):
             TTS.init(self, bus, playback)
+            return
+        super().init(bus, playback, callbacks)
+        if callbacks is None:
+            self.callbacks = StreamingTTSCallbacks(self.bus, play_args=_stream_player_args(self.config),
+                                                   tts_config=self.config)
 
     async def stream_tts(self, sentence: str, lang: str = None, voice: str = None) -> AsyncIterable[bytes]:
         """Yield a streaming WAV (44.1 kHz, 16-bit mono): header first, then PCM as it is decoded.
