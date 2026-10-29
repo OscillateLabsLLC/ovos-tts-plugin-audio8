@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0](https://github.com/OscillateLabsLLC/ovos-tts-plugin-audio8/compare/ovos-tts-plugin-audio8-v0.1.0...ovos-tts-plugin-audio8-v0.2.0) (2026-10-29)
+
+
+### Features
+
+* built-in sounddevice stream player ([9f7c9b1](https://github.com/OscillateLabsLLC/ovos-tts-plugin-audio8/commit/9f7c9b1575cc2aa73a246aa71ad859cfbdc6c2f9))
+* built-in sounddevice stream player ([c16a200](https://github.com/OscillateLabsLLC/ovos-tts-plugin-audio8/commit/c16a2006da75d05a678690be877289cc7ebd639e)), closes [#2](https://github.com/OscillateLabsLLC/ovos-tts-plugin-audio8/issues/2)
+
 ## 0.1.0 (2026-10-29)
 
 
