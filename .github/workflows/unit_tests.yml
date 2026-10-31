@@ -11,10 +11,10 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
-    # macos-14 keeps torch on the small PyPI wheel instead of the ~2.5 GB Linux CUDA wheel.
+    # macOS keeps torch on the small PyPI wheel instead of the ~2.5 GB Linux CUDA wheel.
     # Tests use a tiny random-weight model built from the pinned upstream code: they download
     # config + *.py from Hugging Face, never the 2.6 GB of weights.
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Set up python ${{ matrix.python-version }}
